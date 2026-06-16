@@ -9,6 +9,8 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  flutter_localizations:
+    sdk: flutter
   cupertino_icons: ^1.0.8
   mobile_scanner: ^5.2.3
   shared_preferences: ^2.3.2
@@ -16,6 +18,8 @@ dependencies:
   printing: ^5.13.4
   intl: ^0.19.0
   google_fonts: ^6.2.1
+  signature: ^5.4.0
+  permission_handler: ^11.3.0
 
 dev_dependencies:
   flutter_test:
