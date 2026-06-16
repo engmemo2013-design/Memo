@@ -1,9 +1,12 @@
 // ميمو — Memo | Asset Handover & Return  (single-file build for phone/GitHub)
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:intl/intl.dart' hide TextDirection;
 import 'package:mobile_scanner/mobile_scanner.dart';
+import 'package:signature/signature.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
@@ -170,6 +173,7 @@ class AssetRecord {
   String nationalId;
   List<DeviceLine> devices;
   int createdAt;
+  String? signatureB64;
 
   AssetRecord({
     required this.id,
@@ -182,6 +186,7 @@ class AssetRecord {
     this.department = '',
     this.nationalId = '',
     required this.devices,
+    this.signatureB64,
     required this.createdAt,
   });
 
@@ -196,6 +201,7 @@ class AssetRecord {
         'dept': department,
         'nid': nationalId,
         'dev': devices.map((d) => d.toJson()).toList(),
+        'sig': signatureB64,
         'ca': createdAt,
       };
 
@@ -212,6 +218,7 @@ class AssetRecord {
         devices: ((j['dev'] ?? []) as List)
             .map((e) => DeviceLine.fromJson(e as Map<String, dynamic>))
             .toList(),
+        signatureB64: j['sig'] as String?,
         createdAt: (j['ca'] ?? 0) as int,
       );
 }
@@ -686,6 +693,28 @@ class PdfService {
                 pw.Text(declaration,
                     style: pw.TextStyle(fontSize: 11, fontWeight: pw.FontWeight.bold),
                     textAlign: pw.TextAlign.right),
+                if (rec.signatureB64 != null && rec.signatureB64!.isNotEmpty) ...[
+                  pw.SizedBox(height: 16),
+                  pw.Row(
+                    crossAxisAlignment: pw.CrossAxisAlignment.end,
+                    children: [
+                      pw.Text('توقيع المستلِم : ',
+                          style: const pw.TextStyle(fontSize: 11)),
+                      pw.Container(
+                        width: 170,
+                        height: 60,
+                        decoration: const pw.BoxDecoration(
+                          border: pw.Border(
+                              bottom: pw.BorderSide(width: 0.6, color: _border)),
+                        ),
+                        child: pw.Image(
+                          pw.MemoryImage(base64Decode(rec.signatureB64!)),
+                          fit: pw.BoxFit.contain,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
               ]),
             ),
             pw.Spacer(),
@@ -1059,6 +1088,8 @@ class _NewOperationScreenState extends State<NewOperationScreen> {
   DateTime _date = DateTime.now();
 
   final List<_LineCtrl> _lines = [_LineCtrl()];
+  final SignatureController _sig =
+      SignatureController(penStrokeWidth: 2.2, penColor: Colors.black);
 
   @override
   void initState() {
@@ -1074,6 +1105,7 @@ class _NewOperationScreenState extends State<NewOperationScreen> {
     for (final l in _lines) {
       l.dispose();
     }
+    _sig.dispose();
     super.dispose();
   }
 
@@ -1087,6 +1119,16 @@ class _NewOperationScreenState extends State<NewOperationScreen> {
   }
 
   Future<void> _scan(int i) async {
+    final status = await Permission.camera.request();
+    if (!mounted) return;
+    if (!status.isGranted) {
+      _toast(
+          store.tr('لازم تسمح بصلاحية الكاميرا من الإعدادات',
+              'Camera permission is required (enable it in Settings)'),
+          error: true);
+      if (status.isPermanentlyDenied) openAppSettings();
+      return;
+    }
     final res = await Navigator.of(context).push<String>(
       MaterialPageRoute(builder: (_) => const ScanScreen()),
     );
@@ -1103,7 +1145,7 @@ class _NewOperationScreenState extends State<NewOperationScreen> {
     ));
   }
 
-  void _save() {
+  Future<void> _save() async {
     // resolve employee
     String name, code, dept, nid;
     if (_newEmp) {
@@ -1150,6 +1192,13 @@ class _NewOperationScreenState extends State<NewOperationScreen> {
           id: newId(), name: name, code: code, department: dept, nationalId: nid));
     }
 
+    // capture signature (optional)
+    String? sigB64;
+    if (_sig.isNotEmpty) {
+      final bytes = await _sig.toPngBytes();
+      if (bytes != null) sigB64 = base64Encode(bytes);
+    }
+
     store.addRecord(AssetRecord(
       id: newId(),
       type: _type,
@@ -1161,6 +1210,7 @@ class _NewOperationScreenState extends State<NewOperationScreen> {
       department: dept,
       nationalId: nid,
       devices: devices,
+      signatureB64: sigB64,
       createdAt: DateTime.now().millisecondsSinceEpoch,
     ));
 
@@ -1324,6 +1374,32 @@ class _NewOperationScreenState extends State<NewOperationScreen> {
           ),
           child: Column(
             children: List.generate(_lines.length, (i) => _deviceRow(i)),
+          ),
+        ),
+        const SizedBox(height: 14),
+
+        // signature
+        SectionCard(
+          title: store.tr('توقيع المستلِم', 'Recipient signature'),
+          subtitle: store.tr('وقّع بإصبعك هنا كإقرار بالاستلام',
+              'Sign here with your finger as acknowledgement'),
+          action: TextButton.icon(
+            onPressed: () => setState(() => _sig.clear()),
+            icon: const Icon(Icons.refresh, size: 18),
+            label: Text(store.tr('مسح', 'Clear')),
+          ),
+          child: Container(
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: AppColors.line),
+            ),
+            clipBehavior: Clip.antiAlias,
+            child: Signature(
+              controller: _sig,
+              height: 170,
+              backgroundColor: Colors.white,
+            ),
           ),
         ),
         const SizedBox(height: 18),
@@ -2128,9 +2204,14 @@ class MemoApp extends StatelessWidget {
           title: 'Memo',
           debugShowCheckedModeBanner: false,
           theme: buildTheme(),
-          // Apply RTL/LTR globally (covers dialogs & sheets too).
-          builder: (context, child) =>
-              Directionality(textDirection: store.dir, child: child!),
+          // Locale drives direction natively (RTL for Arabic) — no manual hacks.
+          locale: Locale(store.isAr ? 'ar' : 'en'),
+          localizationsDelegates: const [
+            GlobalMaterialLocalizations.delegate,
+            GlobalWidgetsLocalizations.delegate,
+            GlobalCupertinoLocalizations.delegate,
+          ],
+          supportedLocales: const [Locale('ar'), Locale('en')],
           home: const HomeShell(),
         );
       },
